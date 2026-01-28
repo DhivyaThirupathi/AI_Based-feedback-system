@@ -140,6 +140,7 @@ if role == "super_admin":
                 else:
                     st.error("⚠️ Please fill all details (User, Pass, Email, District & Dept).")
 
+
         # --- RIGHT SIDE: MANAGE EXISTING ADMINS ---
         with c2:
             st.subheader("📋 Manage Admins")
