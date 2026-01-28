@@ -26,7 +26,7 @@ def send_credentials_email(to_email, username, password, access_districts, role_
         
         Here are your login details:
         --------------------------------------------------
-        🔗 URL: https://c5ddca62de55993d-223-237-187-214.serveousercontent.com
+        🔗 URL:   https://2b191f4eb0e052.lhr.life
         👤 Username: {username}
         🔑 Password: {password}
         --------------------------------------------------

@@ -1,6 +1,12 @@
-# File: create_super_admin.py
-from backend.auth import create_user
+from auth import create_user
 
-# Create Super Admin
-success, msg = create_user("superadmin", "admin123", role="super_admin", assigned_districts=["ALL"])
+success, msg = create_user(
+    username="superadmin",
+    password="admin123",
+    email="superadmin@example.com",
+    role="super_admin",
+    assigned_districts=["ALL"],
+    role_category="All"
+)
+
 print(msg)

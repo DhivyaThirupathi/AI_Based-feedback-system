@@ -2,14 +2,16 @@ from datetime import datetime, timezone
 from uuid import uuid4
 from pymongo import ReturnDocument
 
+from backend.utils.security import hash_mobile, mask_mobile
 from backend.db import feedbacks, batches, analysis_results, global_issues
 from backend.ai_engine import analyze_feedback_batch
 
+print("🔥 NEW feedback_service.py LOADED 🔥")
 
 # --------------------------------------------------
 # Batch Handling (Hidden)
 # --------------------------------------------------
-def get_or_create_batch(district, constituency, limit=1): # SET TO 15
+def get_or_create_batch(district, constituency, limit=1):  # SET TO 15
     batch = batches.find_one_and_update(
         {
             "district": district,
@@ -39,42 +41,55 @@ def get_or_create_batch(district, constituency, limit=1): # SET TO 15
 # Main Entry Point
 # --------------------------------------------------
 def process_feedback(form_data):
+    print("🔥 process_feedback called with:", form_data)
 
-    # 1. Add to Batch
+
+    # 🔐 MOBILE NUMBER SECURITY
+    mobile_no = form_data.get("mobile_no")
+    mobile_hash = hash_mobile(mobile_no)
+    mobile_masked = mask_mobile(mobile_no)
+
+    # 1. Add to Batch  ✅ FIX: limit explicitly passed
     batch = get_or_create_batch(
         form_data["district"],
-        form_data["constituency"]
+        form_data["constituency"],
+        limit=1   # change to 15 for production
     )
 
     # 2. Save Feedback
-    feedbacks.insert_one({
-        "location": {
-            "district": form_data["district"],
-            "constituency": form_data["constituency"]
-        },
-        "user": {
-            "name": form_data.get("name"),
-            "age": form_data.get("age"),
-            "booth_no": form_data.get("booth_no"),
-            "email": form_data.get("email")
-        },
-        "feedback": {
-            "type": form_data["type_of_feedback"],
-            "original_text": form_data["feedback_text"],
-            "rating": form_data.get("rating")
-        },
-        "batch_id": batch["batch_id"],
-        "created_at": datetime.now(timezone.utc)
-    })
+    result = feedbacks.insert_one({
+    "location": {
+        "district": form_data["district"],
+        "constituency": form_data["constituency"]
+    },
+    "user": {
+        "name": form_data.get("name"),
+        "age": form_data.get("age"),
+        "mobile_hash": mobile_hash,
+        "mobile_masked": mobile_masked,
+        "email": form_data.get("email")
+    },
+    "feedback": {
+        "type": form_data["type_of_feedback"],
+        "original_text": form_data["feedback_text"],
+        "rating": form_data.get("rating"),
+        "need_update": form_data.get("need_update", False)
+    },
+    "batch_id": batch["batch_id"],
+    "created_at": datetime.now(timezone.utc)
+})
 
-    # 3. Check Limit (Run AI if full)
-    if batch["count"] >= batch["limit"]:
+    print("✅ RAW FEEDBACK STORED IN:", feedbacks.full_name)
+    print("✅ INSERTED ID:", result.inserted_id)
+
+    # 3. Check Limit (Run AI if full) ✅ SAFE FIX
+    if batch["count"] >= batch["limit"] and batch["status"] == "collecting":
         batches.update_one(
             {"batch_id": batch["batch_id"]},
             {"$set": {"status": "processing"}}
         )
         analyze_and_store_batch(batch["batch_id"])
-        return {"message": "Batch Full (15/15) - AI Analysis Started!"}
+        return {"message": "Batch Full - AI Analysis Started!"}
 
     remaining = batch["limit"] - batch["count"]
     return {"message": f"Feedback stored. Waiting for {remaining} more users."}
@@ -85,7 +100,7 @@ def process_feedback(form_data):
 # --------------------------------------------------
 def analyze_and_store_batch(batch_id):
     print(f"🚀 Analyzing Batch: {batch_id}")
-    
+
     docs = list(feedbacks.find({"batch_id": batch_id}))
     texts = [d["feedback"]["original_text"] for d in docs]
 
@@ -117,31 +132,34 @@ def analyze_and_store_batch(batch_id):
 # Global Issue Merging (Smart Logic)
 # --------------------------------------------------
 def calculate_priority(count):
-    if count >= 20: return "CRITICAL"
-    elif count >= 10: return "HIGH"
-    elif count >= 5: return "MEDIUM"
+    if count >= 20:
+        return "CRITICAL"
+    elif count >= 10:
+        return "HIGH"
+    elif count >= 5:
+        return "MEDIUM"
     return "LOW"
+
 
 def update_global_issues(docs, batch_id):
     for fb in docs:
-        if "ai" not in fb: continue
-        
+        if "ai" not in fb:
+            continue
+
         category = fb["ai"].get("category", "Other")
         main_issue = fb["ai"].get("main_issue", "General Issue")
-        
-        # UNIQUE KEY: Merges same issues across different batches
+
         issue_key = f"{category}_{main_issue}".replace(" ", "_").lower()
-        
+
         user_info = {
             "name": fb["user"]["name"],
-            "booth": fb["user"]["booth_no"],
+            "mobile": fb["user"]["mobile_masked"],
             "batch_id": batch_id
         }
 
         existing = global_issues.find_one({"issue_key": issue_key})
 
         if existing:
-            # Add to existing Global Issue
             new_total = existing["total_reports"] + 1
             global_issues.update_one(
                 {"issue_key": issue_key},
@@ -156,7 +174,6 @@ def update_global_issues(docs, batch_id):
                 }
             )
         else:
-            # Create New Global Issue
             global_issues.insert_one({
                 "issue_key": issue_key,
                 "category": category,

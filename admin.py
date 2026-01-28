@@ -1,5 +1,8 @@
 import streamlit as st
 import pandas as pd
+import matplotlib.pyplot as plt
+import plotly.express as px
+
 from io import BytesIO
 from backend.db import feedbacks, global_issues, db
 from backend.auth import authenticate_user, create_user, users_collection
@@ -7,7 +10,7 @@ from backend.auth import authenticate_user, create_user, users_collection
 # ---------------- PAGE CONFIG ----------------
 st.set_page_config(page_title="Admin Dashboard", page_icon="🔒", layout="wide")
 
-# Custom CSS (Your existing style)
+# Custom CSS
 st.markdown("""
     <style>
     .stButton>button {width: 100%;}
@@ -50,13 +53,23 @@ if not st.session_state["authenticated"]:
 user = st.session_state["user_info"]
 role = user["role"]
 access_districts = user["access"]
-user_category = user.get("role_category", "All Categories") # <--- NEW: Get User Dept
+
+# --- NEW: Handle Multiple Departments ---
+# Data pazhaya format-la string-a irundha list-a maathikkom
+raw_category = user.get("role_category", ["All Categories"])
+if isinstance(raw_category, str):
+    user_depts = [raw_category]
+else:
+    user_depts = raw_category
+
+# Display String (Eg: "Water, Road")
+dept_display = ", ".join(user_depts) if isinstance(user_depts, list) else str(user_depts)
 
 # --- SIDEBAR ---
 with st.sidebar:
     st.write(f"👤 **{user['username']}**")
     st.caption(f"Role: {role.upper()}")
-    st.caption(f"Dept: {user_category}") # Show Dept
+    st.caption(f"Depts: {dept_display}") 
     if role == "admin":
         st.caption(f"Access: {', '.join(access_districts)}")
     
@@ -64,10 +77,11 @@ with st.sidebar:
         st.session_state["authenticated"] = False
         st.rerun()
 
-st.title(f"📊 Dashboard ({user_category})")
+st.title(f"📊 Dashboard")
+st.caption(f"Managed Departments: {dept_display}")
 
 # =====================================================
-# 👮 SUPER ADMIN PANEL (With New Role Feature)
+# 👮 SUPER ADMIN PANEL 
 # =====================================================
 if role == "super_admin":
     st.markdown("### 👮 Super Admin Controls")
@@ -87,18 +101,36 @@ if role == "super_admin":
             all_districts = sorted([d for d in all_locs if d])
             selected_access = st.multiselect("Assign Districts", all_districts, key="new_access_input")
 
-            # 2. Role/Department Selection (NEW)
-            categories = ["All Categories", "Water", "Sanitation", "Road", "Electricity", "Health", "Transport", "Safety"]
-            selected_category = st.selectbox("Assign Department", categories, key="new_role_input")
+            # 2. Role/Department Selection (UPDATED for Multiple & Custom)
+            st.write("Assign Departments")
+            predefined_categories = ["Water", "Sanitation", "Road", "Electricity", "Health", "Transport", "Safety"]
             
+            # Multiselect Box
+            selected_categories = st.multiselect(
+                "Select Departments", 
+                predefined_categories, 
+                key="new_role_select"
+            )
+            
+            # Custom Input Box
+            custom_dept = st.text_input("➕ Type New Department (Optional)", placeholder="Eg: Drainage, Parks...", key="new_custom_role")
+            
+            # Combine Both
+            final_dept_list = selected_categories.copy()
+            if custom_dept:
+                final_dept_list.append(custom_dept)
+                # Avoid duplicates
+                final_dept_list = list(set(final_dept_list))
+
             if st.button("Create Admin & Send Email", key="create_admin_btn"):
-                if new_user and new_pass and selected_access and new_email:
-                    # Pass Role Category here
+                if new_user and new_pass and selected_access and new_email and final_dept_list:
+                    
+                    # NOTE: Passing LIST now, not string
                     success, msg = create_user(
                         new_user, new_pass, new_email, 
                         role="admin", 
                         assigned_districts=selected_access,
-                        role_category=selected_category
+                        role_category=final_dept_list 
                     )
                     
                     if "Email sent" in msg:
@@ -106,39 +138,36 @@ if role == "super_admin":
                     else:
                         st.warning(msg)
                 else:
-                    st.error("⚠️ Please fill all details.")
-
-        # admin.py inside 'if role == "super_admin":' block
+                    st.error("⚠️ Please fill all details (User, Pass, Email, District & Dept).")
 
         # --- RIGHT SIDE: MANAGE EXISTING ADMINS ---
         with c2:
             st.subheader("📋 Manage Admins")
             
-            # 1. Import new functions
             from backend.auth import update_admin_access, delete_admin
             
-            # 2. Fetch Admins
             admins = list(users_collection.find({"role": "admin"}))
             
             if not admins:
                 st.info("No sub-admins found.")
             else:
-                # 3. List each admin with controls
                 for i, admin in enumerate(admins):
                     u_name = admin['username']
-                    u_role = admin.get('role_category', 'All')
+                    
+                    # Handle List or String
+                    u_role_raw = admin.get('role_category', ['All Categories'])
+                    u_role_list = [u_role_raw] if isinstance(u_role_raw, str) else u_role_raw
+                    
                     u_access = admin.get('access', [])
                     
-                    # Create an Expander for each user
-                    with st.expander(f"👤 {u_name} ({u_role})"):
+                    with st.expander(f"👤 {u_name}"):
+                        st.caption(f"Current Depts: {', '.join(u_role_list)}")
                         
-                        # --- EDIT SECTION ---
                         st.write("#### ✏️ Update Access")
                         
-                        # District Selector (Pre-filled with current access)
+                        # District Update
                         all_locs = feedbacks.distinct("location.district")
                         all_districts = sorted([d for d in all_locs if d])
-                        
                         new_districts = st.multiselect(
                             "Update Districts", 
                             options=all_districts, 
@@ -146,41 +175,52 @@ if role == "super_admin":
                             key=f"dist_{u_name}"
                         )
                         
-                        # Role Selector (Pre-filled)
-                        categories = ["All Categories", "Water", "Sanitation", "Road", "Electricity", "Health", "Transport", "Safety"]
-                        current_index = categories.index(u_role) if u_role in categories else 0
+                        # Dept Update (Multiselect + Custom)
+                        predefined_categories = ["Water", "Sanitation", "Road", "Electricity", "Health", "Transport", "Safety"]
                         
-                        new_role = st.selectbox(
-                            "Update Dept", 
-                            options=categories, 
-                            index=current_index,
-                            key=f"role_{u_name}"
+                        # Pre-select existing valid ones
+                        default_depts = [d for d in u_role_list if d in predefined_categories]
+                        
+                        updated_categories = st.multiselect(
+                            "Update Departments", 
+                            options=predefined_categories, 
+                            default=default_depts,
+                            key=f"role_upd_{u_name}"
                         )
                         
-                        # Update Button
+                        updated_custom = st.text_input("Add Custom Dept", key=f"custom_upd_{u_name}")
+                        
+                        # Merge Logic
+                        final_updated_depts = updated_categories.copy()
+                        if updated_custom:
+                            final_updated_depts.append(updated_custom)
+                        
+                        # If list is empty, warn or default? Let's keep existing if empty to prevent error
+                        if not final_updated_depts:
+                            final_updated_depts = u_role_list
+
                         if st.button("💾 Save Changes", key=f"save_{u_name}"):
-                            success, msg = update_admin_access(u_name, new_districts, new_role)
+                            success, msg = update_admin_access(u_name, new_districts, final_updated_depts)
                             if success:
                                 st.success(msg)
-                                st.rerun() # Reload page to show changes
+                                st.rerun() 
                             else:
                                 st.error(msg)
                         
                         st.markdown("---")
                         
-                        # --- DELETE SECTION ---
                         st.write("#### 🗑️ Delete User")
                         if st.button(f"Delete {u_name}?", key=f"del_{u_name}", type="primary"):
                             success, msg = delete_admin(u_name)
                             if success:
                                 st.success(msg)
-                                st.rerun() # Reload page
+                                st.rerun() 
                             else:
                                 st.error(msg)
 st.markdown("---")
 
 # =====================================================
-# 🌍 DATA FILTERING LOGIC
+# 🌍 DATA FILTERING LOGIC (UPDATED FOR MULTI-DEPT)
 # =====================================================
 raw_data = list(feedbacks.find().sort("created_at", -1))
 
@@ -190,12 +230,17 @@ if role == "super_admin":
 else:
     all_data = [d for d in raw_data if d.get("location", {}).get("district") in access_districts]
 
-# 2. Filter by Department Role (NEW)
-# If user is "Water", only show Water issues.
-if role != "super_admin" and user_category != "All Categories":
-    all_data = [d for d in all_data if d.get("ai", {}).get("category") == user_category]
+# 2. Filter by Department Role (UPDATED)
+# Logic: Show data IF "All Categories" is in user's list OR issue category is in user's list
+if role != "super_admin":
+    # Ensure user_depts is a list
+    current_user_depts = user.get("role_category", ["All Categories"])
+    if isinstance(current_user_depts, str):
+        current_user_depts = [current_user_depts]
 
-# Analyzed vs Pending
+    if "All Categories" not in current_user_depts:
+        all_data = [d for d in all_data if d.get("ai", {}).get("category") in current_user_depts]
+
 analyzed_feedbacks = [fb for fb in all_data if fb.get("ai")]
 
 total_received = len(all_data)
@@ -203,7 +248,7 @@ total_analyzed = len(analyzed_feedbacks)
 pending_count = total_received - total_analyzed
 
 # =====================================================
-# DASHBOARD UI (UNCHANGED)
+# DASHBOARD UI
 # =====================================================
 
 col1, col2, col3 = st.columns(3)
@@ -216,42 +261,272 @@ with col3:
 
 st.markdown("---")
 
-st.subheader("🔥 Top Critical Issues (AI Merged)")
+# =====================================================
+# 🔥 TOP CRITICAL ISSUES (GROUPED)
+# =====================================================
+st.subheader("🔥 Top Critical Issues (Grouped by Problem)")
 
-all_issues = list(global_issues.find())
-filtered_issues = []
-
-# Filter Global Issues visually based on access
-relevant_keys = set([f"{fb['ai']['category']}_{fb['ai']['main_issue']}".replace(" ", "_").lower() for fb in analyzed_feedbacks])
-
-for issue in all_issues:
-    if issue["issue_key"] in relevant_keys:
-        filtered_issues.append(issue)
-
-if not filtered_issues:
-    st.info("✅ No critical issues found in your jurisdiction.")
+if not analyzed_feedbacks:
+    st.info("✅ No issues reported yet.")
 else:
-    priority_map = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
-    filtered_issues.sort(key=lambda x: (priority_map.get(x.get("priority", "LOW"), 1), x.get("total_reports", 0)), reverse=True)
+    grouped_issues = {}
 
-    for issue in filtered_issues:
-        name = issue.get("issue_text", "Unknown")
-        count = issue.get("total_reports", 0)
-        prio = issue.get("priority", "LOW")
+    for fb in analyzed_feedbacks:
+        ai_data = fb.get("ai", {})
+        loc_data = fb.get("location", {})
+        
+        issue_name = ai_data.get("main_issue", "Unknown Issue")
+        category = ai_data.get("category", "General")
+        priority = ai_data.get("priority", "LOW")
+        district = loc_data.get("district", "Unknown")
+        user_name = fb.get("user", {}).get("name", "Anonymous")
+
+        unique_key = f"{category}_{issue_name}"
+
+        if unique_key in grouped_issues:
+            grouped_issues[unique_key]["total_reports"] += 1
+            grouped_issues[unique_key]["users"].append(user_name)
+            grouped_issues[unique_key]["districts"].add(district)
+            
+            prio_map = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
+            existing_prio_val = prio_map.get(grouped_issues[unique_key]["priority"], 1)
+            new_prio_val = prio_map.get(priority, 1)
+            
+            if new_prio_val > existing_prio_val:
+                grouped_issues[unique_key]["priority"] = priority
+                
+        else:
+            grouped_issues[unique_key] = {
+                "issue_text": issue_name,
+                "category": category,
+                "districts": {district},
+                "priority": priority,
+                "total_reports": 1,
+                "users": [user_name]
+            }
+
+    final_issue_list = list(grouped_issues.values())
+    priority_map = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
+    final_issue_list.sort(key=lambda x: (priority_map.get(x["priority"], 1), x["total_reports"]), reverse=True)
+
+    for issue in final_issue_list:
+        name = issue["issue_text"]
+        count = issue["total_reports"]
+        prio = issue["priority"]
+        cat = issue["category"]
+        
+        dist_list = sorted(list(issue["districts"]))
+        if len(dist_list) > 3:
+            dist_str = ", ".join(dist_list[:3]) + f" (+{len(dist_list)-3} others)"
+        else:
+            dist_str = ", ".join(dist_list)
+
+        user_list = list(set(issue["users"]))
 
         with st.container(border=True):
             c1, c2 = st.columns([5, 1])
             with c1:
                 icon = "🚨" if prio == "CRITICAL" else "🟠" if prio == "HIGH" else "🔵"
                 st.markdown(f"### {icon} {name}")
-                users = issue.get("users", [])
-                user_names = ", ".join([u.get('name', 'Unknown') for u in users[-3:]])
-                st.caption(f"Affected Users: {user_names} ...")
+                st.markdown(f"**📍 Locations:** {dist_str} | **📂 Dept:** {cat}")
+                
+                if len(user_list) > 3:
+                    display_users = ", ".join(user_list[:3]) + f" and {len(user_list)-3} others"
+                else:
+                    display_users = ", ".join(user_list)
+                
+                st.caption(f"Reported by: {display_users}")
+                
             with c2:
-                st.metric("Reports", count)
-                st.caption(f"Priority: {prio}")
+                st.metric("Total Reports", count)
+                st.caption(f"Status: {prio}")
 
 st.markdown("---")
+# =====================================================
+# 📊 DISTRICT-WISE FEEDBACK DISTRIBUTION
+# =====================================================
+st.subheader("📊 Feedback Distribution by Department (District-wise)")
+st.caption("Select a district to view department-wise complaint distribution")
+
+if not analyzed_feedbacks:
+    st.info("No analyzed feedbacks available for visualization.")
+else:
+    # Extract available districts from analyzed data
+    available_districts = sorted({
+        fb.get("location", {}).get("district")
+        for fb in analyzed_feedbacks
+        if fb.get("location", {}).get("district")
+    })
+
+    selected_district = st.selectbox(
+        "📍 Select District",
+        options=["All Districts"] + available_districts
+    )
+
+    # Filter data based on selected district
+    if selected_district != "All Districts":
+        district_data = [
+            fb for fb in analyzed_feedbacks
+            if fb.get("location", {}).get("district") == selected_district
+        ]
+    else:
+        district_data = analyzed_feedbacks
+
+    if not district_data:
+        st.warning("No feedback data available for this district.")
+    else:
+        categories = [
+            fb.get("ai", {}).get("category", "Other")
+            for fb in district_data
+        ]
+
+        df_cat = (
+            pd.DataFrame(categories, columns=["Department"])
+            .value_counts()
+            .reset_index(name="Count")
+        )
+
+        col_chart, col_table = st.columns([3, 1])
+
+        with col_chart:
+            import plotly.express as px
+
+            fig = px.bar(
+                df_cat,
+                x="Count",
+                y="Department",
+                orientation="h",
+                color="Count",
+                color_continuous_scale="Blues",
+                text="Count",
+            )
+
+            fig.update_layout(
+                height=420,
+                xaxis_title="Number of Reports",
+                yaxis_title="Department",
+                margin=dict(l=40, r=20, t=30, b=20),
+            )
+
+            fig.update_traces(
+                textposition="outside",
+                hovertemplate="<b>%{y}</b><br>Reports: %{x}<extra></extra>",
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
+
+        with col_table:
+            st.markdown("### 📋 Summary")
+            st.dataframe(
+                df_cat,
+                use_container_width=True,
+                hide_index=True
+            )
+# =====================================================
+# 📊 DISTRICT & CONSTITUENCY-WISE FEEDBACK DISTRIBUTION
+# =====================================================
+st.subheader("📊 Feedback Distribution by Department")
+st.caption("Select District and Constituency to analyze department-wise complaints")
+
+if not analyzed_feedbacks:
+    st.info("No analyzed feedbacks available for visualization.")
+else:
+    # -------------------------------
+    # District Selection
+    # -------------------------------
+    districts = sorted({
+        fb.get("location", {}).get("district")
+        for fb in analyzed_feedbacks
+        if fb.get("location", {}).get("district")
+    })
+
+    selected_district = st.selectbox(
+        "📍 Select District",
+        options=["Select District"] + districts
+    )
+
+    if selected_district == "Select District":
+        st.info("Please select a district to continue.")
+        st.stop()
+
+    # -------------------------------
+    # Constituency Selection
+    # -------------------------------
+    constituencies = sorted({
+        fb.get("location", {}).get("constituency")
+        for fb in analyzed_feedbacks
+        if fb.get("location", {}).get("district") == selected_district
+        and fb.get("location", {}).get("constituency")
+    })
+
+    selected_constituency = st.selectbox(
+        "🏛️ Select Constituency",
+        options=["All Constituencies"] + constituencies
+    )
+
+    # -------------------------------
+    # Filter Data
+    # -------------------------------
+    filtered_data = [
+        fb for fb in analyzed_feedbacks
+        if fb.get("location", {}).get("district") == selected_district
+        and (
+            selected_constituency == "All Constituencies"
+            or fb.get("location", {}).get("constituency") == selected_constituency
+        )
+    ]
+
+    if not filtered_data:
+        st.warning("No feedback data available for this selection.")
+    else:
+        categories = [
+            fb.get("ai", {}).get("category", "Other")
+            for fb in filtered_data
+        ]
+
+        df_cat = (
+            pd.DataFrame(categories, columns=["Department"])
+            .value_counts()
+            .reset_index(name="Count")
+        )
+
+        col_chart, col_table = st.columns([3, 1])
+
+        with col_chart:
+            import plotly.express as px
+
+            fig = px.bar(
+                df_cat,
+                x="Count",
+                y="Department",
+                orientation="h",
+                color="Count",
+                color_continuous_scale="Teal",
+                text="Count",
+            )
+
+            fig.update_layout(
+                height=420,
+                xaxis_title="Number of Reports",
+                yaxis_title="Department",
+                margin=dict(l=40, r=20, t=30, b=20),
+            )
+
+            fig.update_traces(
+                textposition="outside",
+                hovertemplate="<b>%{y}</b><br>Reports: %{x}<extra></extra>",
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
+
+        with col_table:
+            st.markdown("### 📋 Summary")
+            st.dataframe(
+                df_cat,
+                use_container_width=True,
+                hide_index=True
+            )
+
 
 if st.checkbox("📂 Click to Show Detailed Data & Download"):
     st.subheader("📋 District-wise Feedback Data")

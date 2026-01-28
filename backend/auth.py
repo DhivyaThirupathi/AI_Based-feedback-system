@@ -1,6 +1,7 @@
 import bcrypt
-from backend.db import db, feedbacks # Import feedbacks collection
-from backend.email_sender import send_credentials_email 
+from backend.db import db, feedbacks
+from backend.email_sender import send_credentials_email
+
 
 users_collection = db["users"]
 
