@@ -1,6 +1,7 @@
 import streamlit as st
 import json
 import os
+import re
 from backend.feedback_service import process_feedback
 
 # ---------------- PAGE CONFIG ----------------
@@ -10,10 +11,11 @@ st.set_page_config(page_title="Feedback Portal", layout="centered")
 # 🌐 LANGUAGE SETTINGS (Tamil & English)
 # ==========================================
 
-# 1. Sidebar Language Switcher
-lang_choice = st.sidebar.radio("Select Language / மொழியைத் தேர்ந்தெடுக்கவும்:", ("English", "தமிழ்"))
+lang_choice = st.sidebar.radio(
+    "Select Language / மொழியைத் தேர்ந்தெடுக்கவும்:",
+    ("English", "தமிழ்")
+)
 
-# 2. Translations Dictionary
 TEXT = {
     "English": {
         "title": "📝 Feedback Portal",
@@ -21,14 +23,14 @@ TEXT = {
         "district_label": "District *",
         "const_label": "Assembly Constituency *",
         "personal_header": "👤 Personal Details",
-        "name_label": "Name (optional)",
-        "age_label": "Age",
+        "name_label": "Name *",
+        "age_label": "Age *",
         "booth_label": "Mobile Number *",
         "feedback_header": "🗂️ Feedback Details",
         "type_label": "Type of Feedback *",
         "type_options": ["General feedback", "State policy", "Services", "Complaint"],
-        "email_label": "Email (optional)",
-        "rating_label": "Rating (1–5)",
+        "email_label": "Email *",
+        "rating_label": "Rating (1–5) *",
         "text_label": "Your Feedback *",
         "sol_label": "Suggested Solution (optional)",
         "need_update_label": "Do you want updates on this feedback?",
@@ -46,14 +48,14 @@ TEXT = {
         "district_label": "மாவட்டம் *",
         "const_label": "சட்டமன்ற தொகுதி *",
         "personal_header": "👤 தனிப்பட்ட விவரங்கள்",
-        "name_label": "பெயர் (விருப்பமிருந்தால்)",
-        "age_label": "வயது",
+        "name_label": "பெயர் *",
+        "age_label": "வயது *",
         "booth_label": "மொபைல் எண் *",
         "feedback_header": "🗂️ கருத்து விவரங்கள்",
         "type_label": "கருத்து வகை *",
         "type_options": ["பொதுவான கருத்து", "மாநில கொள்கை", "சேவைகள்", "புகார்"],
-        "email_label": "மின்னஞ்சல் (விருப்பமிருந்தால்)",
-        "rating_label": "மதிப்பீடு (1–5)",
+        "email_label": "மின்னஞ்சல் *",
+        "rating_label": "மதிப்பீடு (1–5) *",
         "text_label": "உங்கள் கருத்து *",
         "sol_label": "பரிந்துரைக்கப்படும் தீர்வு (விருப்பமிருந்தால்)",
         "need_update_label": "இந்த கருத்தின் நிலை குறித்து புதுப்பிப்பு வேண்டுமா?",
@@ -69,10 +71,17 @@ TEXT = {
 
 t = TEXT[lang_choice]
 
-# ---------------- MAIN UI STARTS ----------------
+# ---------------- VALIDATION FUNCTIONS ----------------
+def is_valid_mobile(mobile):
+    return mobile.isdigit() and len(mobile) == 10
+
+def is_valid_email(email):
+    pattern = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
+    return re.match(pattern, email)
+
+# ---------------- MAIN UI ----------------
 st.title(t["title"])
 
-# ---------------- LOAD TN DATA ----------------
 @st.cache_data
 def load_tn_data():
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -85,17 +94,15 @@ districts = sorted(TN_DATA.keys())
 
 # ---------------- LOCATION ----------------
 st.subheader(t["loc_header"])
-
 district = st.selectbox(t["district_label"], districts, index=None)
 
-if district:
-    constituency_list = [c["en"] for c in TN_DATA[district]["constituencies"]]
-else:
-    constituency_list = []
-
+constituency_list = (
+    [c["en"] for c in TN_DATA[district]["constituencies"]]
+    if district else []
+)
 constituency = st.selectbox(t["const_label"], constituency_list, index=None)
 
-# ---------------- FORM START ----------------
+# ---------------- FORM ----------------
 with st.form("feedback_form"):
 
     st.subheader(t["personal_header"])
@@ -105,13 +112,11 @@ with st.form("feedback_form"):
 
     st.subheader(t["feedback_header"])
     selected_type_display = st.selectbox(t["type_label"], t["type_options"])
-
     email = st.text_input(t["email_label"])
     rating = st.slider(t["rating_label"], 1, 5, 3)
     feedback_text = st.text_area(t["text_label"], height=140)
     solution = st.text_area(t["sol_label"], height=100)
 
-    # ✅ ONLY NEW OPTION (YOUR IDEA)
     need_update = st.radio(
         t["need_update_label"],
         ("No", "Yes"),
@@ -124,12 +129,31 @@ with st.form("feedback_form"):
 if submitted:
     if not district:
         st.warning(t["warn_dist"])
+
     elif not constituency:
         st.warning(t["warn_const"])
+
+    elif not name.strip():
+        st.warning("⚠️ Please enter your Name")
+
+    elif age <= 0:
+        st.warning("⚠️ Please enter a valid Age")
+
     elif not mobile_no.strip():
         st.warning(t["warn_booth"])
+
+    elif not is_valid_mobile(mobile_no.strip()):
+        st.warning("⚠️ Mobile number must be exactly 10 digits")
+
+    elif not email.strip():
+        st.warning("⚠️ Please enter Email ID")
+
+    elif not is_valid_email(email.strip()):
+        st.warning("⚠️ Please enter a valid Email ID")
+
     elif not feedback_text.strip():
         st.warning(t["warn_text"])
+
     else:
         with st.spinner(t["process_msg"]):
 
@@ -138,21 +162,18 @@ if submitted:
                 idx = t["type_options"].index(selected_type_display)
                 final_feedback_type = TEXT["English"]["type_options"][idx]
 
-            # ✅ ONLY NEW LOGIC
-            need_update_flag = True if need_update == "Yes" else False
-
             process_feedback({
                 "district": district,
                 "constituency": constituency,
-                "name": name,
+                "name": name.strip(),
                 "age": age,
-                "mobile_no": mobile_no,
-                "email": email,
+                "mobile_no": mobile_no.strip(),
+                "email": email.strip(),
                 "type_of_feedback": final_feedback_type,
                 "rating": rating,
-                "feedback_text": feedback_text,
-                "solution": solution,
-                "need_update": need_update_flag   # ✅ NEW
+                "feedback_text": feedback_text.strip(),
+                "solution": solution.strip(),   # optional
+                "need_update": True if need_update == "Yes" else False
             })
 
         st.success(t["success"])
